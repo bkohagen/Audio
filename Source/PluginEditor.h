@@ -14,14 +14,16 @@ public:
 };
 
 //==============================================================================
-// Analog-style moving-needle gain-reduction meter (0 .. 20 dB)
+// Gain-reduction meter: 0 dB on the LEFT, 20 dB on the right, needle + fill arc,
+// peak-hold marker and numeric readout.
 class GainReductionMeter final : public juce::Component
 {
 public:
-    void setGainReduction (float db);
+    void setGainReduction (float db); // call from the UI timer (~30 Hz)
     void paint (juce::Graphics&) override;
 private:
-    float needleDb = 0.0f;
+    float needleDb = 0.0f, peakDb = 0.0f;
+    int   peakHoldTicks = 0;
 };
 
 //==============================================================================
@@ -38,7 +40,7 @@ class ParamBinding
 {
 public:
     ParamBinding (juce::RangedAudioParameter& p, juce::Slider& s);
-    ParamBinding (juce::RangedAudioParameter& p, juce::Button& b);
+    ParamBinding (juce::RangedAudioParameter& p, juce::Button& b, bool invert = false);
     void poll(); // message thread only
 
 private:
@@ -46,8 +48,32 @@ private:
     juce::RangedAudioParameter& param;
     juce::Slider* slider = nullptr;
     juce::Button* button = nullptr;
+    bool invert = false;
     bool dragging = false;
     float lastPolled = -1.0f;
+};
+
+//==============================================================================
+// A knob with its name, value readout and hardware-style scale labels around it.
+class KnobCell final : public juce::Component, private juce::Slider::Listener
+{
+public:
+    KnobCell (const juce::String& name, juce::StringArray scaleLabels, bool stepped,
+              juce::Colour accent, const juce::String& unitSuffix = {});
+    ~KnobCell() override;
+
+    juce::Slider slider;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    void sliderValueChanged (juce::Slider*) override { repaint(); }
+    juce::String name, suffix;
+    juce::StringArray labels;
+    bool stepped;
+    juce::Colour accent;
+    juce::Rectangle<int> knobArea;
 };
 
 //==============================================================================
@@ -60,26 +86,31 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    static constexpr int baseWidth = 720, baseHeight = 800;
+
 private:
     void timerCallback() override;
 
-    struct Knob
+    // Everything is laid out at a fixed base size inside this component, which is then
+    // scaled with an AffineTransform so the window can be resized freely.
+    struct Content final : public juce::Component
     {
-        juce::Slider slider;
-        juce::Label  label;
+        void paint (juce::Graphics&) override;
     };
 
-    void setupKnob (Knob&, const char* paramId, const juce::String& name, juce::Colour accent);
-    void setupToggle (juce::ToggleButton&, const char* paramId, const juce::String& name);
+    void bindKnob (KnobCell&, const char* paramId);
+    void bindButton (juce::ToggleButton&, const char* paramId, const juce::String& text, bool invert = false);
 
     VBCAudioProcessor& processor;
     VBCLookAndFeel lnf;
+    Content content;
 
-    Knob threshold, ratio, attack, release, makeup, hpfFreq, analog, mix;
-    juce::ToggleButton hpfOn, extSc, scListen, bypass;
-    std::vector<std::unique_ptr<ParamBinding>> bindings;
+    KnobCell threshold, makeup, attack, release, ratio, hpfFreq, mix, analog;
+    juce::ToggleButton inButton, hpfOn, extSc, scListen;
     GainReductionMeter meter;
-    juce::Label scStatus;
+    juce::Label scStatus, inName, inState;
+
+    std::vector<std::unique_ptr<ParamBinding>> bindings; // declared after the controls they bind
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VBCAudioProcessorEditor)
 };

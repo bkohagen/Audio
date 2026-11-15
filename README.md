@@ -5,6 +5,11 @@ British console bus compressor, with an adjustable side-chain high-pass filter.
 Built with JUCE 8; runs natively on Apple silicon (universal arm64 + x86_64 binary, macOS 11+).
 Designed for live use in hosts such as **Live Professor**.
 
+![VBC-1 interface](docs/screenshot.png)
+
+Portrait, resizable window (75–150 %). The gain-reduction meter reads 0 dB on the left, with a
+needle, fill arc, peak-hold marker and numeric readout.
+
 ## Features
 
 | Control | Range | Notes |

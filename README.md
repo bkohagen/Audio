@@ -83,14 +83,20 @@ This copies the plug-ins to `~/Library/Audio/Plug-Ins/VST3` and `…/Components`
 download quarantine flag and ad-hoc signs them.
 
 ### Option B — build locally
-Requires Xcode command-line tools and CMake (`brew install cmake`).
+Requires Apple's command-line tools (`xcode-select --install`) and CMake (`brew install cmake`).
+The full Xcode app is not needed.
 
 ```bash
-cmake -B build -G Xcode
-cmake --build build --config Release
-ctest --test-dir build -C Release      # DSP unit tests
+git clone -b claude/ecstatic-ptolemy-86rla9 https://github.com/bkohagen/Audio.git
+cd Audio
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 8
+ctest --test-dir build                 # DSP unit tests
 bash scripts/install_mac.sh
 ```
+
+(If you have the full Xcode app you can use `cmake -B build -G Xcode` and
+`cmake --build build --config Release` instead.)
 
 ## Using it in Live Professor
 1. Install as above, then rescan plug-ins in Live Professor's plug-in manager.

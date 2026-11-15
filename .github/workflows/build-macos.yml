@@ -1,0 +1,51 @@
+name: Build macOS (Apple silicon + Intel)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: DSP unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check universal binary
+        run: lipo -info "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3/Contents/MacOS/VBC-1 Bus Compressor"
+
+      - name: Validate VST3 with pluginval
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 8 --validate-in-process \
+            --validate "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3"
+
+      - name: Validate AU with auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/VBC1_artefacts/Release/AU/VBC-1 Bus Compressor.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx Vbc1 Vbca
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3" dist/
+          cp -R "build/VBC1_artefacts/Release/AU/VBC-1 Bus Compressor.component" dist/
+          cp scripts/install_mac.sh dist/
+          cd dist && zip -qry ../VBC1-macOS.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VBC1-macOS
+          path: VBC1-macOS.zip

@@ -71,4 +71,21 @@ if(VBC_BUILD_TESTS)
     enable_testing()
     add_executable(vbc_dsp_tests tests/dsp_tests.cpp)
     add_test(NAME vbc_dsp_tests COMMAND vbc_dsp_tests)
+
+    # Real-time safety test: traps malloc/new/free/mutex calls made on the audio thread.
+    # Uses GNU ld --wrap, so it runs on Linux (CI runs it on every push).
+    if(UNIX AND NOT APPLE)
+        juce_add_console_app(vbc_rt_safety_test PRODUCT_NAME "vbc_rt_safety_test")
+        target_sources(vbc_rt_safety_test PRIVATE tests/rt_safety_test.cpp)
+        target_link_libraries(vbc_rt_safety_test PRIVATE VBC1 juce::juce_audio_utils)
+        target_compile_definitions(vbc_rt_safety_test PRIVATE
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+        target_compile_options(vbc_rt_safety_test PRIVATE -fno-pie)
+        target_link_options(vbc_rt_safety_test PRIVATE -no-pie -rdynamic
+            -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=posix_memalign,--wrap=aligned_alloc
+            -Wl,--wrap=pthread_mutex_lock,--wrap=pthread_mutex_trylock
+            -Wl,--wrap=pthread_rwlock_rdlock,--wrap=pthread_rwlock_wrlock
+            -Wl,--wrap=pthread_cond_wait,--wrap=pthread_cond_timedwait)
+        add_test(NAME vbc_rt_safety_test COMMAND vbc_rt_safety_test)
+    endif()
 endif()

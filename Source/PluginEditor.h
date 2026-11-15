@@ -25,6 +25,32 @@ private:
 };
 
 //==============================================================================
+/*  Binds a Slider or ToggleButton to a parameter WITHOUT registering a parameter listener.
+
+    JUCE's Slider/ButtonAttachment listen to the parameter; when the host automates it from
+    the audio thread, the attachment locks and posts (allocating) a message to the message
+    queue from inside the audio callback. Instead we:
+      * GUI -> host: begin/endChangeGesture + setValueNotifyingHost on the message thread.
+      * host -> GUI: poll the parameter's atomic value from the editor's timer.
+    The audio thread therefore never touches anything the GUI owns.
+*/
+class ParamBinding
+{
+public:
+    ParamBinding (juce::RangedAudioParameter& p, juce::Slider& s);
+    ParamBinding (juce::RangedAudioParameter& p, juce::Button& b);
+    void poll(); // message thread only
+
+private:
+    void sendSliderValue();
+    juce::RangedAudioParameter& param;
+    juce::Slider* slider = nullptr;
+    juce::Button* button = nullptr;
+    bool dragging = false;
+    float lastPolled = -1.0f;
+};
+
+//==============================================================================
 class VBCAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -41,19 +67,17 @@ private:
     {
         juce::Slider slider;
         juce::Label  label;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
 
     void setupKnob (Knob&, const char* paramId, const juce::String& name, juce::Colour accent);
-    void setupToggle (juce::ToggleButton&, std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>&,
-                      const char* paramId, const juce::String& name);
+    void setupToggle (juce::ToggleButton&, const char* paramId, const juce::String& name);
 
     VBCAudioProcessor& processor;
     VBCLookAndFeel lnf;
 
     Knob threshold, ratio, attack, release, makeup, hpfFreq, analog, mix;
-    juce::ToggleButton hpfOn, extSc, scListen;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> hpfOnAtt, extScAtt, scListenAtt;
+    juce::ToggleButton hpfOn, extSc, scListen, bypass;
+    std::vector<std::unique_ptr<ParamBinding>> bindings;
     GainReductionMeter meter;
     juce::Label scStatus;
 

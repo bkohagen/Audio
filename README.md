@@ -34,6 +34,39 @@ the unit tests (an impulse comes out at sample 0, and the clean path is bit-tran
 Because there's no oversampling, the Analog saturation is kept gentle to limit aliasing;
 turn Analog down to 0 % for a fully clean compressor.
 
+### Real-time safety (lock-free audio thread)
+Live hosts (Live Professor, MainStage, …) glitch or drop out if a plug-in allocates memory or
+waits on a lock inside its audio callback. VBC-1 is built and **tested** to avoid that:
+
+- `processBlock()` does no heap allocation, no locking, no logging/I-O and no message-thread
+  calls. The DSP state is fixed-size members; parameters are read with atomic loads.
+- **No `AudioProcessorValueTreeState` and no `SliderAttachment`/`ButtonAttachment`.** With those,
+  host automation (which the VST3 wrapper applies *inside* the audio callback) makes the attachment
+  lock and `realloc` the message queue on the audio thread whenever the plug-in window is open.
+  The editor instead polls the parameters on a 30 Hz UI timer and sends knob moves to the host
+  from the message thread.
+- Host bypass is mapped to an internal parameter and **crossfaded over 10 ms** (as are LISTEN,
+  Mix and Make-up), so bypassing or automating never clicks. The SC HPF keeps running while
+  switched off, so re-enabling it doesn't glitch either.
+- CPU load is constant: bypass/listen don't change the amount of work per sample.
+
+`tests/rt_safety_test.cpp` enforces this. It wraps `malloc`/`calloc`/`realloc`/`free`, every
+`operator new`/`delete`, and pthread mutex/rwlock/condvar calls at link time, then runs the
+plug-in on an audio thread exactly the way JUCE's VST3 wrapper does (host automation of every
+parameter, random block sizes 1–2048, stereo/mono, side-chain on/off) while the editor is open and a
+simulated user moves knobs. Result:
+
+| Audio-thread phase | Allocations | Locks |
+|---|---|---|
+| `processBlock` (our code) | **0** | **0** |
+| Host applying automation (JUCE VST3 wrapper) | **0** | 1 per changed parameter — JUCE's own per-parameter listener lock |
+
+That remaining lock lives inside JUCE's VST3 wrapper (`AudioProcessorParameter::sendValueChangedMessageToListeners`)
+and can't be removed without patching JUCE. It is only ever contended if the *same* parameter is
+changed from the GUI at the same instant the host automates it; in the stress test (GUI changing
+parameters every 2 ms during heavy automation) it was contended 1–2 times in 24,000 changes.
+Before these fixes the same test showed ~1,800 allocations and ~250 contended locks per run.
+
 ## Getting the Mac plug-in
 
 ### Option A — download the CI build (no Xcode needed)

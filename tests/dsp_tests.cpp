@@ -173,6 +173,37 @@ int main()
         CHECK (err < 1e-6, "mix 0%% == dry (max err %.2e)", err);
     }
 
+    // 10. Bypass and Listen switch without clicks (crossfaded), and bypass ends exactly dry
+    {
+        auto maxStep = [] (const std::vector<float>& v, size_t from, size_t to)
+        {
+            float m = 0; for (size_t i = from + 1; i < to; ++i) m = std::max (m, std::abs (v[i] - v[i - 1])); return m;
+        };
+        for (int which = 0; which < 2; ++which)
+        {
+            vbc::BusCompressor c; auto p = cleanParams();
+            p.thresholdDb = -30.0f; p.ratio = 10.0f; p.makeupDb = 12.0f; p.analog = 0.5f; p.hpfOn = true; p.hpfHz = 400.0f;
+            c.prepare (fs); c.setParameters (p); c.reset();
+            const size_t half = (size_t) (0.25 * fs);
+            auto l = sine (50.0, -3.0, 2 * half), r = l, ref = l; // low tone: worst case for HPF'd listen
+            float* io1[2] = { l.data(), r.data() };
+            c.process (io1, 2, nullptr, 0, (int) half);
+            if (which == 0) p.bypass = true; else p.scListen = true;
+            c.setParameters (p);
+            float* io2[2] = { l.data() + half, r.data() + half };
+            c.process (io2, 2, nullptr, 0, (int) half);
+            // The 50 Hz sine changes by at most ~0.0047/sample; a hard switch here would jump by ~0.3+
+            const float stepAtSwitch = maxStep (l, half - 4, half + 480);
+            const char* name = which == 0 ? "bypass" : "listen";
+            CHECK (stepAtSwitch < 0.02f, "%s switch is click-free (max sample step %.4f)", name, stepAtSwitch);
+            if (which == 0)
+            {
+                double err = 0; for (size_t i = 2 * half - 1000; i < 2 * half; ++i) err = std::max (err, (double) std::abs (l[i] - ref[i]));
+                CHECK (err == 0.0, "bypass settles to bit-exact dry (max err %.2e)", err);
+            }
+        }
+    }
+
     std::printf ("\n%s (%d failure%s)\n", failures ? "TESTS FAILED" : "ALL TESTS PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }

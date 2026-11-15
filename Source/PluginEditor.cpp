@@ -125,6 +125,73 @@ void GainReductionMeter::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+ParamBinding::ParamBinding (juce::RangedAudioParameter& p, juce::Slider& s) : param (p), slider (&s)
+{
+    using namespace juce;
+    // Mirror the parameter's (possibly skewed / stepped) range on the slider.
+    const auto range = param.getNormalisableRange();
+    NormalisableRange<double> r ((double) range.start, (double) range.end,
+        [range] (double, double, double v) { return (double) range.convertFrom0to1 ((float) v); },
+        [range] (double, double, double v) { return (double) range.convertTo0to1 ((float) v); },
+        [range] (double, double, double v) { return (double) range.snapToLegalValue ((float) v); });
+    r.interval = range.interval;
+    r.skew = range.skew;
+    r.symmetricSkew = range.symmetricSkew;
+    s.setNormalisableRange (r);
+
+    s.textFromValueFunction = [this] (double v) { return param.getText (param.convertTo0to1 ((float) v), 0); };
+    s.valueFromTextFunction = [this] (const String& t) { return (double) param.convertFrom0to1 (param.getValueForText (t)); };
+    s.setDoubleClickReturnValue (true, (double) param.convertFrom0to1 (param.getDefaultValue()));
+
+    s.onDragStart   = [this] { dragging = true; param.beginChangeGesture(); };
+    s.onDragEnd     = [this] { param.endChangeGesture(); dragging = false; };
+    s.onValueChange = [this] { sendSliderValue(); };
+    poll();
+    s.updateText(); // value may equal the slider's initial 0, so force the formatted text once
+}
+
+ParamBinding::ParamBinding (juce::RangedAudioParameter& p, juce::Button& b) : param (p), button (&b)
+{
+    b.setClickingTogglesState (true);
+    b.onClick = [this]
+    {
+        param.beginChangeGesture();
+        param.setValueNotifyingHost (button->getToggleState() ? 1.0f : 0.0f);
+        param.endChangeGesture();
+    };
+    poll();
+}
+
+void ParamBinding::sendSliderValue()
+{
+    const float norm = param.convertTo0to1 ((float) slider->getValue());
+    if (juce::approximatelyEqual (norm, param.getValue()))
+        return;
+
+    if (dragging)
+        param.setValueNotifyingHost (norm);
+    else
+    {   // mouse wheel / double-click / text entry: a one-shot gesture
+        param.beginChangeGesture();
+        param.setValueNotifyingHost (norm);
+        param.endChangeGesture();
+    }
+}
+
+void ParamBinding::poll()
+{
+    const float v = param.getValue(); // atomic read
+    if (juce::approximatelyEqual (v, lastPolled))
+        return;
+    lastPolled = v;
+
+    if (slider != nullptr && ! dragging)
+        slider->setValue ((double) param.convertFrom0to1 (v), juce::dontSendNotification);
+    if (button != nullptr)
+        button->setToggleState (v >= 0.5f, juce::dontSendNotification);
+}
+
+//==============================================================================
 VBCAudioProcessorEditor::VBCAudioProcessorEditor (VBCAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
@@ -139,9 +206,10 @@ VBCAudioProcessorEditor::VBCAudioProcessorEditor (VBCAudioProcessor& p)
     setupKnob (analog,    ParamIDs::analog,    "ANALOG",    Pal::amber);
     setupKnob (mix,       ParamIDs::mix,       "MIX",       Pal::grey);
 
-    setupToggle (hpfOn,    hpfOnAtt,    ParamIDs::hpfOn,    "HPF");
-    setupToggle (extSc,    extScAtt,    ParamIDs::extSc,    "EXT SC");
-    setupToggle (scListen, scListenAtt, ParamIDs::scListen, "LISTEN");
+    setupToggle (hpfOn,    ParamIDs::hpfOn,    "HPF");
+    setupToggle (extSc,    ParamIDs::extSc,    "EXT SC");
+    setupToggle (scListen, ParamIDs::scListen, "LISTEN");
+    setupToggle (bypass,   ParamIDs::bypass,   "BYPASS");
 
     addAndMakeVisible (meter);
     scStatus.setJustificationType (juce::Justification::centred);
@@ -171,16 +239,16 @@ void VBCAudioProcessorEditor::setupKnob (Knob& k, const char* paramId, const juc
     k.label.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     addAndMakeVisible (k.label);
 
-    k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, paramId, k.slider);
+    if (auto* p = processor.getParameterByID (paramId))
+        bindings.push_back (std::make_unique<ParamBinding> (*p, k.slider));
 }
 
-void VBCAudioProcessorEditor::setupToggle (juce::ToggleButton& b,
-                                           std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>& att,
-                                           const char* paramId, const juce::String& name)
+void VBCAudioProcessorEditor::setupToggle (juce::ToggleButton& b, const char* paramId, const juce::String& name)
 {
     b.setButtonText (name);
     addAndMakeVisible (b);
-    att = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (processor.apvts, paramId, b);
+    if (auto* p = processor.getParameterByID (paramId))
+        bindings.push_back (std::make_unique<ParamBinding> (*p, b));
 }
 
 void VBCAudioProcessorEditor::paint (juce::Graphics& g)
@@ -233,10 +301,14 @@ void VBCAudioProcessorEditor::resized()
     extSc.setBounds    (730, 228, 70, 24);
     scListen.setBounds (652, 258, 148, 24);
     scStatus.setBounds (652, 288, 148, 20);
+    bypass.setBounds   (718, 12, 90, 24);
 }
 
 void VBCAudioProcessorEditor::timerCallback()
 {
+    for (auto& b : bindings)
+        b->poll();
+
     meter.setGainReduction (processor.gainReductionDb.load());
 
     const bool connected = processor.sidechainConnected.load();

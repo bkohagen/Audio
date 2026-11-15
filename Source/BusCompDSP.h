@@ -9,6 +9,10 @@
 //   * output stage: gentle symmetric soft saturation
 //   * side-chain high-pass filter (12 dB/oct, 20–500 Hz), internal or external key
 //
+// REAL-TIME SAFETY: no heap allocation, no locks, no system calls, no exceptions, no I/O.
+// All state is fixed-size members; every switch (bypass, listen, mix, makeup...) is
+// crossfaded/smoothed so automation or button presses never produce clicks.
+//
 // ZERO LATENCY: everything here is causal and sample-by-sample. No look-ahead,
 // no oversampling, no block-based analysis. Output sample n depends only on
 // input samples <= n, and the plugin reports 0 samples of latency.
@@ -75,7 +79,16 @@ struct Smoother
 {
     void setup (double sampleRate, double timeMs) noexcept { c = (float) std::exp (-1.0 / (0.001 * timeMs * sampleRate)); }
     void snap (float v) noexcept { cur = target = v; }
-    float next() noexcept { cur = target + c * (cur - target); return cur; }
+    float next() noexcept
+    {
+        const float prev = cur;
+        cur = target + c * (cur - target);
+        // A float one-pole stalls short of its target once each step rounds to nothing
+        // (~1e-5 away for a 10 ms ramp). Snap when it stops moving so switches
+        // (bypass, mix 0/100 %) settle to bit-exact values.
+        if (! (cur < prev || cur > prev)) cur = target; // i.e. cur == prev, without -Wfloat-equal
+        return cur;
+    }
     float c = 0.0f, cur = 0.0f, target = 0.0f;
 };
 
@@ -93,6 +106,7 @@ struct Parameters
     float mix         = 1.0f;    // 0 .. 1 (parallel compression)
     bool  externalSc  = false;
     bool  scListen    = false;
+    bool  bypass      = false;   // click-free (crossfaded) bypass
 };
 
 //==============================================================================
@@ -109,6 +123,8 @@ public:
         mixSm.setup (fs, 20.0);
         thresholdSm.setup (fs, 20.0);
         analogSm.setup (fs, 50.0);
+        bypassSm.setup (fs, 10.0);
+        listenSm.setup (fs, 10.0);
         lastHpfHz = -1.0f;
         updateCoefficients();
         reset();
@@ -123,6 +139,8 @@ public:
         mixSm.snap (params.mix);
         thresholdSm.snap (params.thresholdDb);
         analogSm.snap (params.analog);
+        bypassSm.snap (params.bypass ? 1.0f : 0.0f);
+        listenSm.snap (params.scListen ? 1.0f : 0.0f);
         currentGrDb = 0.0f;
     }
 
@@ -133,6 +151,8 @@ public:
         mixSm.target       = std::clamp (p.mix, 0.0f, 1.0f);
         thresholdSm.target = p.thresholdDb;
         analogSm.target    = std::clamp (p.analog, 0.0f, 1.0f);
+        bypassSm.target    = p.bypass ? 1.0f : 0.0f;
+        listenSm.target    = p.scListen ? 1.0f : 0.0f;
         updateCoefficients();
     }
 
@@ -182,8 +202,10 @@ public:
                 else
                     s = io[ch][n];
 
+                // The HPF always runs so its state stays warm: toggling it never glitches.
+                const float filtered = hpf[ch].process (s);
                 if (params.hpfOn)
-                    s = hpf[ch].process (s);
+                    s = filtered;
 
                 key[ch] = s;
                 peak = std::max (peak, std::abs (s)); // stereo link: max of channels
@@ -218,6 +240,8 @@ public:
             const float makeup  = makeupSm.next();
             const float mix     = mixSm.next();
             const float analog  = analogSm.next();
+            const float bypass  = bypassSm.next();
+            const float listen  = listenSm.next();
 
             // VCA colour grows with gain reduction (real VCAs distort more as they work harder)
             const float vcaDrive = analog * std::min (0.08f + 0.03f * (float) grDb, 0.7f);
@@ -225,12 +249,6 @@ public:
 
             for (int ch = 0; ch < numChannels; ++ch)
             {
-                if (params.scListen)
-                {
-                    io[ch][n] = key[ch];
-                    continue;
-                }
-
                 const float dry = io[ch][n];
                 float wet = dry * vcaGain;
 
@@ -251,7 +269,10 @@ public:
                 if (outDrive > 1.0e-5f)
                     wet = std::tanh (outDrive * wet) / outDrive;
 
-                io[ch][n] = dry + mix * (wet - dry);
+                float out = dry + mix * (wet - dry);
+                out = out * (1.0f - listen) + key[ch] * listen; // crossfade to side-chain audition
+                out = out * (1.0f - bypass) + dry * bypass;     // crossfade to clean bypass (exact at 1)
+                io[ch][n] = out;
             }
         }
 
@@ -298,7 +319,7 @@ private:
 
     SvfHighpass hpf[kMaxChannels];
     DcBlocker   dcBlock[kMaxChannels];
-    Smoother    makeupSm, mixSm, thresholdSm, analogSm;
+    Smoother    makeupSm, mixSm, thresholdSm, analogSm, bypassSm, listenSm;
     float       lastHpfHz = -1.0f;
 
     double envFast = 0.0, envSlow = 0.0;

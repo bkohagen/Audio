@@ -16,8 +16,21 @@ namespace ParamIDs
     inline constexpr const char* mix       = "mix";
     inline constexpr const char* extSc     = "extSc";
     inline constexpr const char* scListen  = "scListen";
+    inline constexpr const char* bypass    = "bypass";
 }
 
+/*  REAL-TIME SAFETY DESIGN
+    -----------------------
+    * processBlock() never allocates, frees, locks, logs or touches the message thread.
+      This is enforced by tests/rt_safety_test.cpp, which traps malloc/new/free/mutex calls.
+    * Parameters are plain JUCE parameter objects whose values are std::atomic<float>.
+      The audio thread only does atomic loads.
+    * No AudioProcessorValueTreeState and no Slider/ButtonAttachments: those register
+      listeners that, when the host automates a parameter inside the audio callback,
+      lock a CriticalSection and post (and allocate) messages to the message queue
+      from the audio thread. The editor instead polls parameter values on a UI timer.
+    * GUI <-> audio communication is via lock-free atomics only.
+*/
 class VBCAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -48,26 +61,37 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    juce::AudioProcessorValueTreeState apvts;
-    static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    // Host bypass maps to this parameter, so bypass is crossfaded (click-free) by our DSP
+    // instead of the wrapper hard-switching to processBlockBypassed().
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypass; }
 
-    // For the GUI meter
+    juce::RangedAudioParameter* getParameterByID (const juce::String& id) const;
+
+    // GUI meters (written by audio thread, read by GUI timer)
     std::atomic<float> gainReductionDb { 0.0f };
     std::atomic<bool>  sidechainConnected { false };
+    static_assert (std::atomic<float>::is_always_lock_free, "meter atomics must be lock-free");
+    static_assert (std::atomic<bool>::is_always_lock_free,  "meter atomics must be lock-free");
 
     static const juce::StringArray ratioChoices, attackChoices, releaseChoices;
 
 private:
     vbc::BusCompressor compressor;
 
-    std::atomic<float>* pThreshold = nullptr; std::atomic<float>* pRatio = nullptr;
-    std::atomic<float>* pAttack = nullptr;    std::atomic<float>* pRelease = nullptr;
-    std::atomic<float>* pMakeup = nullptr;    std::atomic<float>* pHpfOn = nullptr;
-    std::atomic<float>* pHpfFreq = nullptr;   std::atomic<float>* pAnalog = nullptr;
-    std::atomic<float>* pMix = nullptr;       std::atomic<float>* pExtSc = nullptr;
-    std::atomic<float>* pScListen = nullptr;
+    juce::AudioParameterFloat*  threshold = nullptr;
+    juce::AudioParameterChoice* ratio     = nullptr;
+    juce::AudioParameterChoice* attack    = nullptr;
+    juce::AudioParameterChoice* release   = nullptr;
+    juce::AudioParameterFloat*  makeup    = nullptr;
+    juce::AudioParameterBool*   hpfOn     = nullptr;
+    juce::AudioParameterFloat*  hpfFreq   = nullptr;
+    juce::AudioParameterFloat*  analog    = nullptr;
+    juce::AudioParameterFloat*  mix       = nullptr;
+    juce::AudioParameterBool*   extSc     = nullptr;
+    juce::AudioParameterBool*   scListen  = nullptr;
+    juce::AudioParameterBool*   bypass    = nullptr;
 
-    vbc::Parameters readParameters() const;
+    vbc::Parameters readParameters() const noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VBCAudioProcessor)
 };

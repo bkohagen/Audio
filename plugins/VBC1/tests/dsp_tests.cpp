@@ -1,5 +1,5 @@
 // Offline tests for the VBC-1 DSP core. Build & run: ctest (or ./vbc_dsp_tests)
-#include "../Source/BusCompDSP.h"
+#include "BusCompDSP.h"
 
 #include <cstdio>
 #include <vector>

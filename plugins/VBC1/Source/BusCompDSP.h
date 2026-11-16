@@ -18,6 +18,8 @@
 // input samples <= n, and the plugin reports 0 samples of latency.
 #pragma once
 
+#include <kit/dsp/DspBasics.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -25,72 +27,10 @@
 namespace vbc
 {
 
-constexpr double kPi = 3.14159265358979323846;
-
-//==============================================================================
-// Topology-preserving-transform state-variable high-pass (Butterworth, 12 dB/oct)
-struct SvfHighpass
-{
-    void setup (double sampleRate, double cutoffHz) noexcept
-    {
-        cutoffHz = std::clamp (cutoffHz, 1.0, 0.45 * sampleRate);
-        g  = std::tan (kPi * cutoffHz / sampleRate);
-        k  = std::sqrt (2.0); // 1/Q, Q = 0.7071
-        a1 = 1.0 / (1.0 + g * (g + k));
-        a2 = g * a1;
-        a3 = g * a2;
-    }
-
-    void reset() noexcept { ic1 = ic2 = 0.0; }
-
-    float process (float x) noexcept
-    {
-        const double v0 = x;
-        const double v3 = v0 - ic2;
-        const double v1 = a1 * ic1 + a2 * v3;
-        const double v2 = ic2 + a2 * ic1 + a3 * v3;
-        ic1 = 2.0 * v1 - ic1;
-        ic2 = 2.0 * v2 - ic2;
-        return (float) (v0 - k * v1 - v2);
-    }
-
-    double g = 0, k = 1.41421356, a1 = 0, a2 = 0, a3 = 0;
-    double ic1 = 0, ic2 = 0;
-};
-
-//==============================================================================
-// One-pole DC blocker (used only on the harmonic-distortion component)
-struct DcBlocker
-{
-    void setup (double sampleRate, double hz) noexcept { r = std::exp (-2.0 * kPi * hz / sampleRate); }
-    void reset() noexcept { x1 = y1 = 0.0; }
-    float process (float x) noexcept
-    {
-        const double y = x - x1 + r * y1;
-        x1 = x; y1 = y;
-        return (float) y;
-    }
-    double r = 0.999, x1 = 0, y1 = 0;
-};
-
-//==============================================================================
-// Simple one-pole parameter smoother (per-sample, zero-latency)
-struct Smoother
-{
-    void setup (double sampleRate, double timeMs) noexcept { c = (float) std::exp (-1.0 / (0.001 * timeMs * sampleRate)); }
-    void snap (float v) noexcept { cur = target = v; }
-    float next() noexcept
-    {
-        const float prev = cur;
-        cur = target + c * (cur - target);
-        // A float one-pole stalls short of its target once each step rounds to nothing
-        // (~1e-5 away for a 10 ms ramp). Snap when it stops moving so switches
-        // (bypass, mix 0/100 %) settle to bit-exact values.
-        if (! (cur < prev || cur > prev)) cur = target; // i.e. cur == prev, without -Wfloat-equal
-        return cur;
-    }
-    float c = 0.0f, cur = 0.0f, target = 0.0f;
-};
+using kit::kPi;
+using kit::Smoother;
+using kit::SvfHighpass;
+using kit::DcBlocker;
 
 //==============================================================================
 struct Parameters

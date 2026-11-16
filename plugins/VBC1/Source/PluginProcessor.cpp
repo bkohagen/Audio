@@ -49,15 +49,6 @@ VBCAudioProcessor::VBCAudioProcessor()
     bypass    = add (new AudioParameterBool (ParameterID { ParamIDs::bypass, 1 }, "Bypass", false));
 }
 
-juce::RangedAudioParameter* VBCAudioProcessor::getParameterByID (const juce::String& id) const
-{
-    for (auto* p : getParameters())
-        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (p))
-            if (r->getParameterID() == id)
-                return r;
-    return nullptr;
-}
-
 bool VBCAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto in  = layouts.getMainInputChannelSet();
@@ -139,29 +130,15 @@ juce::AudioProcessorEditor* VBCAudioProcessor::createEditor()
     return new VBCAudioProcessorEditor (*this);
 }
 
-// State is stored as <VBC1><PARAM id="..." value="..."/>...</VBC1> (plain values).
+// State: <VBC1><PARAM id="..." value="..."/>...</VBC1> (plain values), via the shared kit helpers.
 void VBCAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    juce::XmlElement xml (kStateTag);
-    for (auto* p : getParameters())
-        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (p))
-        {
-            auto* e = xml.createNewChildElement ("PARAM");
-            e->setAttribute ("id", r->getParameterID());
-            e->setAttribute ("value", (double) r->convertFrom0to1 (r->getValue()));
-        }
-    copyXmlToBinary (xml, destData);
+    kit::saveParameterState (*this, kStateTag, destData);
 }
 
 void VBCAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    auto xml = getXmlFromBinary (data, sizeInBytes);
-    if (xml == nullptr || ! xml->hasTagName (kStateTag))
-        return;
-
-    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
-        if (auto* r = getParameterByID (e->getStringAttribute ("id")))
-            r->setValueNotifyingHost (r->convertTo0to1 ((float) e->getDoubleAttribute ("value", r->convertFrom0to1 (r->getDefaultValue()))));
+    kit::loadParameterState (*this, kStateTag, data, sizeInBytes);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

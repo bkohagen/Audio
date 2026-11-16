@@ -1,36 +1,47 @@
 #!/bin/bash
-# Installs VBC-1 into the user plug-in folders and clears the download quarantine flag.
-# Run from the folder containing the .vst3 / .component (the unzipped CI artifact),
-# or from the repo root after building (it also looks in build/VBC1_artefacts/Release).
+# Installs every plugin bundle found next to this script (the unzipped CI artifact) or, when run
+# from a checkout, every bundle in build/ — VST3, AU and AAX — clears the download quarantine
+# flag and ad-hoc signs them (AAX is left alone: it must be PACE-signed for retail Pro Tools).
+#
+#   bash install_mac.sh            # install everything
+#   bash install_mac.sh VBC-1      # install only bundles whose name contains "VBC-1"
 set -euo pipefail
 cd "$(dirname "$0")"
+filter="${1:-}"
 
-find_bundle() {
-  for p in "./$1" "../build/VBC1_artefacts/Release/$2/$1" "./build/VBC1_artefacts/Release/$2/$1"; do
-    [ -e "$p" ] && { echo "$p"; return; }
-  done
-}
+VST3_DIR=~/Library/Audio/Plug-Ins/VST3
+AU_DIR=~/Library/Audio/Plug-Ins/Components
+AAX_DIR="/Library/Application Support/Avid/Audio/Plug-Ins"
+mkdir -p "$VST3_DIR" "$AU_DIR"
 
-VST3=$(find_bundle "VBC-1 Bus Compressor.vst3" VST3)
-AU=$(find_bundle "VBC-1 Bus Compressor.component" AU)
+bundles=()
+while IFS= read -r -d '' b; do bundles+=("$b"); done < <(
+  { find . -maxdepth 1 \( -name '*.vst3' -o -name '*.component' -o -name '*.aaxplugin' \) -print0
+    [ -d ../build ] && find ../build -path '*_artefacts/Release/*' \( -name '*.vst3' -o -name '*.component' -o -name '*.aaxplugin' \) -prune -print0
+  } 2>/dev/null)
 
-mkdir -p ~/Library/Audio/Plug-Ins/VST3 ~/Library/Audio/Plug-Ins/Components
+[ ${#bundles[@]} -gt 0 ] || { echo "No plugin bundles found next to this script or in ../build"; exit 1; }
 
-if [ -n "${VST3:-}" ]; then
-  rm -rf ~/Library/Audio/Plug-Ins/VST3/"VBC-1 Bus Compressor.vst3"
-  cp -R "$VST3" ~/Library/Audio/Plug-Ins/VST3/
-  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"VBC-1 Bus Compressor.vst3" 2>/dev/null || true
-  codesign --force --deep -s - ~/Library/Audio/Plug-Ins/VST3/"VBC-1 Bus Compressor.vst3"
-  echo "Installed VST3 -> ~/Library/Audio/Plug-Ins/VST3"
-fi
+au_installed=0
+for b in "${bundles[@]}"; do
+  name=$(basename "$b")
+  [[ -z "$filter" || "$name" == *"$filter"* ]] || continue
+  case "$name" in
+    *.vst3)      dest="$VST3_DIR" ;;
+    *.component) dest="$AU_DIR"; au_installed=1 ;;
+    *.aaxplugin) dest="$AAX_DIR" ;;
+  esac
+  if [[ "$name" == *.aaxplugin ]]; then
+    echo "Installing AAX needs admin rights (Pro Tools plug-in folder):"
+    sudo mkdir -p "$dest" && sudo rm -rf "$dest/$name" && sudo cp -R "$b" "$dest/"
+  else
+    rm -rf "$dest/$name"
+    cp -R "$b" "$dest/"
+    xattr -dr com.apple.quarantine "$dest/$name" 2>/dev/null || true
+    codesign --force --deep -s - "$dest/$name"
+  fi
+  echo "Installed $name -> $dest"
+done
 
-if [ -n "${AU:-}" ]; then
-  rm -rf ~/Library/Audio/Plug-Ins/Components/"VBC-1 Bus Compressor.component"
-  cp -R "$AU" ~/Library/Audio/Plug-Ins/Components/
-  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"VBC-1 Bus Compressor.component" 2>/dev/null || true
-  codesign --force --deep -s - ~/Library/Audio/Plug-Ins/Components/"VBC-1 Bus Compressor.component"
-  killall -9 AudioComponentRegistrar 2>/dev/null || true
-  echo "Installed AU   -> ~/Library/Audio/Plug-Ins/Components"
-fi
-
-echo "Done. Rescan plug-ins in Live Professor."
+[ $au_installed -eq 1 ] && { killall -9 AudioComponentRegistrar 2>/dev/null || true; }
+echo "Done. Rescan plug-ins in your host (Live Professor, Logic, Pro Tools...)."

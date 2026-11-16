@@ -1,4 +1,4 @@
-name: Build macOS (Apple silicon + Intel)
+name: Build all plugins (macOS + RT-safety tests)
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
 
 jobs:
   realtime-safety:
-    # Linux-only: the RT-safety test uses GNU ld --wrap to trap malloc/new/free/mutex calls
-    # made on the audio thread. The DSP and plug-in code are identical on macOS.
+    # Linux-only: the RT-safety test uses GNU ld --wrap to trap malloc/new/free/mutex calls made
+    # on the audio thread. Runs DSP tests + RT-safety tests for EVERY plugin in plugins/.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +19,24 @@ jobs:
             libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      - name: Build tests
-        run: cmake --build build -j 4 --target vbc_dsp_tests vbc_rt_safety_test
-      - name: DSP + real-time safety tests
+      - name: Build
+        run: cmake --build build -j 4
+      - name: DSP + real-time safety tests (all plugins)
         run: ctest --test-dir build --output-on-failure
 
   build:
-    runs-on: macos-latest   # Apple silicon runner (always a supported image)
+    runs-on: macos-latest   # Apple silicon; always a supported image (pinned images get retired)
+    env:
+      AAX_SDK_URL: ${{ secrets.AAX_SDK_URL }}   # optional: private download URL of the Avid AAX SDK zip
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch AAX SDK (optional, enables Pro Tools format)
+        if: env.AAX_SDK_URL != ''
+        run: |
+          curl -sSL -o aax.zip "$AAX_SDK_URL"
+          mkdir -p aax && unzip -q aax.zip -d aax
+          echo "AAX_SDK_PATH=$(dirname "$(find "$PWD/aax" -path '*/Interfaces/AAX.h' | head -1)")/.." >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
@@ -38,32 +47,53 @@ jobs:
       - name: DSP unit tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Check universal binary
-        run: lipo -info "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3/Contents/MacOS/VBC-1 Bus Compressor"
+      - name: Collect bundles
+        run: |
+          mkdir -p dist
+          find build -path '*_artefacts/Release/VST3/*.vst3' -prune -exec cp -R {} dist/ \;
+          find build -path '*_artefacts/Release/AU/*.component' -prune -exec cp -R {} dist/ \;
+          find build -path '*_artefacts/Release/AAX/*.aaxplugin' -prune -exec cp -R {} dist/ \; || true
+          ls -1 dist
 
-      - name: Validate VST3 with pluginval
+      - name: Check universal binaries
+        run: |
+          for b in dist/*.vst3 dist/*.component; do
+            bin="$b/Contents/MacOS/$(ls "$b/Contents/MacOS" | head -1)"
+            archs=$(lipo -archs "$bin"); echo "$b: $archs"
+            [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "not universal: $b"; exit 1; }
+          done
+
+      - name: Validate every VST3 with pluginval
         run: |
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip
           unzip -q pluginval.zip
-          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 8 --validate-in-process \
-            --validate "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3"
+          for b in dist/*.vst3; do
+            echo "::group::pluginval $b"
+            ./pluginval.app/Contents/MacOS/pluginval --strictness-level 8 --validate-in-process --validate "$b"
+            echo "::endgroup::"
+          done
 
-      - name: Validate AU with auval
+      - name: Validate every AU with auval
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R "build/VBC1_artefacts/Release/AU/VBC-1 Bus Compressor.component" ~/Library/Audio/Plug-Ins/Components/
+          cp -R dist/*.component ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar || true
-          auval -v aufx Vbc1 Vbca
+          for c in dist/*.component; do
+            plist="$c/Contents/Info.plist"
+            type=$(plutil -extract AudioComponents.0.type raw "$plist")
+            sub=$(plutil -extract AudioComponents.0.subtype raw "$plist")
+            man=$(plutil -extract AudioComponents.0.manufacturer raw "$plist")
+            echo "::group::auval $type $sub $man ($c)"
+            auval -v "$type" "$sub" "$man"
+            echo "::endgroup::"
+          done
 
       - name: Package
         run: |
-          mkdir -p dist
-          cp -R "build/VBC1_artefacts/Release/VST3/VBC-1 Bus Compressor.vst3" dist/
-          cp -R "build/VBC1_artefacts/Release/AU/VBC-1 Bus Compressor.component" dist/
           cp scripts/install_mac.sh dist/
-          cd dist && zip -qry ../VBC1-macOS.zip .
+          cd dist && zip -qry ../AudioPlugins-macOS.zip .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VBC1-macOS
-          path: VBC1-macOS.zip
+          name: AudioPlugins-macOS
+          path: AudioPlugins-macOS.zip

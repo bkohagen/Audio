@@ -1,4 +1,6 @@
-// Real-time safety test for VBC-1 (Linux / GNU ld only).
+// Generic real-time safety test for ANY plugin in this repo (Linux / GNU ld only).
+// Built automatically for every plugin by kit_add_plugin(); it links the plugin's shared code
+// and drives it through createPluginFilter().
 //
 // Every heap allocation/free and every blocking-lock call made from the audio thread while it
 // is inside the "audio callback" is trapped and reported with a stack trace:
@@ -11,11 +13,9 @@
 // on the audio thread, then processBlock() runs. Meanwhile the message thread has the editor
 // open and runs its event loop, like a host with the plug-in window showing.
 //
-// Scenarios: stereo with side-chain, stereo without side-chain, mono; random block sizes
-// (1..2048, including blocks bigger than prepareToPlay announced); heavy automation of every
-// parameter every block; mode toggles (auto/fixed release, HPF, ext SC, listen, bypass).
-#include "../Source/PluginProcessor.h"
-#include "../Source/PluginEditor.h"
+// Scenarios: every bus layout the plugin accepts out of stereo/mono x side-chain on/off; random
+// block sizes (1..2048, including blocks bigger than prepareToPlay announced); heavy automation
+// of every parameter (including switches) every block; with and without the editor open.
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <execinfo.h>
@@ -26,6 +26,8 @@
 #include <new>
 #include <random>
 #include <thread>
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter(); // defined by the plugin under test
 
 //==============================================================================
 namespace rt
@@ -149,18 +151,27 @@ static void hostSetsParameter (juce::AudioProcessorParameter& p, float normalise
 
 struct Scenario { const char* name; int mainCh; int scCh; };
 
-static bool runScenario (const Scenario& sc, bool withEditor)
+/** Returns -1 if the plugin rejects this layout (scenario skipped), else 1 pass / 0 fail. */
+static int runScenario (const Scenario& sc, bool withEditor)
 {
     using namespace juce;
-    auto proc = std::make_unique<VBCAudioProcessor>();
+    std::unique_ptr<AudioProcessor> proc (createPluginFilter());
 
     AudioProcessor::BusesLayout layout;
     const auto mainSet = sc.mainCh == 1 ? AudioChannelSet::mono() : AudioChannelSet::stereo();
-    layout.inputBuses.add (mainSet);
-    layout.inputBuses.add (sc.scCh == 0 ? AudioChannelSet::disabled()
-                                        : (sc.scCh == 1 ? AudioChannelSet::mono() : AudioChannelSet::stereo()));
-    layout.outputBuses.add (mainSet);
-    if (! proc->setBusesLayout (layout)) { std::printf ("  layout rejected!\n"); return false; }
+    const int numIns = proc->getBusCount (true), numOuts = proc->getBusCount (false);
+    for (int i = 0; i < numIns; ++i)
+        layout.inputBuses.add (i == 0 ? mainSet
+                                      : (sc.scCh == 0 ? AudioChannelSet::disabled()
+                                                      : (sc.scCh == 1 ? AudioChannelSet::mono() : AudioChannelSet::stereo())));
+    for (int i = 0; i < numOuts; ++i)
+        layout.outputBuses.add (i == 0 ? mainSet : AudioChannelSet::disabled());
+
+    if ((sc.scCh > 0 && numIns < 2) || ! proc->setBusesLayout (layout))
+    {
+        if (withEditor) std::printf ("  %-30s (layout not supported by this plugin - skipped)\n", sc.name);
+        return -1;
+    }
 
     constexpr double fs = 48000.0;
     constexpr int announcedBlock = 512, maxBlock = 2048;
@@ -170,7 +181,7 @@ static bool runScenario (const Scenario& sc, bool withEditor)
     std::unique_ptr<AudioProcessorEditor> editor;
     if (withEditor) editor.reset (proc->createEditor());
 
-    const int totalCh = proc->getTotalNumInputChannels();
+    const int totalCh = jmax (proc->getTotalNumInputChannels(), proc->getTotalNumOutputChannels());
     AudioBuffer<float> buffer (totalCh, maxBlock);  // pre-allocated, like a host
     MidiBuffer midi;
     midi.ensureSize (256);
@@ -262,7 +273,7 @@ static bool runScenario (const Scenario& sc, bool withEditor)
             std::printf ("      %s\n", syms ? syms[d] : "?");
         std::free (syms);
     }
-    return processOk && deliveryOk;
+    return (processOk && deliveryOk) ? 1 : 0;
 }
 
 int main()
@@ -274,13 +285,22 @@ int main()
         { "stereo + stereo side-chain", 2, 2 },
         { "stereo, side-chain disabled", 2, 0 },
         { "mono + mono side-chain", 1, 1 },
+        { "mono, side-chain disabled", 1, 0 },
     };
 
     bool ok = true;
-    std::printf ("Real-time safety: trapping heap + lock calls on the audio thread\n");
+    int ran = 0;
+    {
+        std::unique_ptr<juce::AudioProcessor> p (createPluginFilter());
+        std::printf ("Real-time safety [%s]: trapping heap + lock calls on the audio thread\n", p->getName().toRawUTF8());
+    }
     for (const auto& s : scenarios)
         for (bool editor : { false, true })
-            ok &= runScenario (s, editor);
+        {
+            const int r = runScenario (s, editor);
+            if (r >= 0) { ++ran; ok &= (r == 1); }
+        }
+    if (ran == 0) { std::printf ("No supported bus layout was tested!\n"); ok = false; }
 
     std::printf ("\n%s\n", ok ? "REAL-TIME SAFE: processBlock is allocation- and lock-free; host parameter delivery "
                                    "allocates nothing and only touches JUCE's per-parameter listener locks"

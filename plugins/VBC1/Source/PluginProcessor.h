@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <kit/ui/Components.h>
 #include "BusCompDSP.h"
 
 namespace ParamIDs
@@ -64,8 +65,6 @@ public:
     // Host bypass maps to this parameter, so bypass is crossfaded (click-free) by our DSP
     // instead of the wrapper hard-switching to processBlockBypassed().
     juce::AudioProcessorParameter* getBypassParameter() const override { return bypass; }
-
-    juce::RangedAudioParameter* getParameterByID (const juce::String& id) const;
 
     // GUI meters (written by audio thread, read by GUI timer)
     std::atomic<float> gainReductionDb { 0.0f };

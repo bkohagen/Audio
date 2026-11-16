@@ -8,8 +8,9 @@ build/test/validation pipeline.
 | Plugin | What it is | Latency |
 |---|---|---|
 | [VBC-1 Bus Compressor](plugins/VBC1/README.md) | Stereo VCA bus compressor with S/C HPF, analog colour, parallel mix | 0 samples |
+| [TPE-542 Tape Emulator](plugins/TPE542/README.md) | 500-series-style tape emulator: saturation, 15/30 IPS, Silk Red/Blue, blend | 0 samples |
 
-![VBC-1](plugins/VBC1/docs/screenshot.png)
+<img src="plugins/VBC1/docs/screenshot.png" width="360" alt="VBC-1"> <img src="plugins/TPE542/docs/screenshot.png" width="360" alt="TPE-542">
 
 ## Getting the plugins
 **Download (no tools needed):** every push builds all plugins on an Apple-silicon GitHub runner,
